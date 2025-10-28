@@ -8,9 +8,10 @@ from datetime import datetime, timezone
 from azure.cosmos.aio import CosmosClient
 
 # CosmosDB Configuration
-ENDPOINT = "https://your-account.documents.azure.com:443/"
-KEY = "your-primary-key-here"
-DATABASE_NAME = "chathistory"
+# 
+ENDPOINT = "https://your-cosmosdb-account.documents.azure.com:443/"
+KEY = ""
+DATABASE_NAME = "chathistory"  
 CONTAINER_NAME = "messages"
 
 # Update configuration
@@ -41,25 +42,20 @@ async def main():
         
         print("🔍 Querying for documents using pagination...")
         documents = []
-        page_size = 10  # Small page size to avoid header size issues
+        page_size = 1  # Start with very small page size to avoid header size issues
         
         # Use pagination to fetch documents in small batches
+        print(f"📄 Fetching documents with page size: {page_size}")
         try:
-            async for item in container.query_items(query=query, max_item_count=page_size):
+            async for item in container.query_items(query=query, max_item_count=page_size, enable_cross_partition_query=True):
                 documents.append(item)
+                if len(documents) % 10 == 0:
+                    print(f"📥 Fetched {len(documents)} documents so far...")
                 if len(documents) >= MAX_RECORDS:
                     break
         except Exception as e:
-            if "Header value is too long" in str(e):
-                print("⚠️  Reducing page size to 5 due to header size limit...")
-                page_size = 5
-                documents = []
-                async for item in container.query_items(query=query, max_item_count=page_size):
-                    documents.append(item)
-                    if len(documents) >= MAX_RECORDS:
-                        break
-            else:
-                raise
+            print(f"⚠️  Error during query: {e}")
+            raise
         
         print(f"📋 Found {len(documents)} documents to update\n")
         
