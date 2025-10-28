@@ -37,36 +37,34 @@ async def main():
     container = database.get_container_client(CONTAINER_NAME)
     
     try:
-        # Query for document IDs only to avoid header size issues
-        # We'll fetch full documents one at a time using read_item
-        query = "SELECT c.id, c._partitionKey FROM c WHERE c.type = 'message' AND c.role = 'assistant' AND NOT IS_DEFINED(c.usage)"
+        # Use a simpler query with TOP to limit results and avoid header issues
+        # Query in very small batches to work around header size limitation
+        query = "SELECT TOP 1 c.id FROM c WHERE c.type = 'message' AND c.role = 'assistant' AND NOT IS_DEFINED(c.usage)"
         
-        print("🔍 Querying for document IDs...")
-        doc_ids = []
+        print("🔍 Querying and updating documents in small batches...")
         
-        # Fetch document IDs
-        print(f"📄 Fetching document IDs...")
-        try:
-            async for item in container.query_items(query=query, max_item_count=100):
-                doc_ids.append({'id': item['id'], 'partition_key': item.get('_partitionKey', item['id'])})
-                if len(doc_ids) >= MAX_RECORDS:
-                    break
-        except Exception as e:
-            print(f"⚠️  Error during query: {e}")
-            raise
-        
-        print(f"📋 Found {len(doc_ids)} documents to update\n")
-        
-        if not doc_ids:
-            print("✅ No documents need updating!")
-            return
-        
-        # Update documents one by one
         updated_count = 0
-        for i, doc_ref in enumerate(doc_ids, 1):
+        processed_ids = set()
+        
+        # Process documents in a loop, querying one at a time
+        for batch_num in range(MAX_RECORDS):
             try:
-                # Read the full document
-                doc = await container.read_item(item=doc_ref['id'], partition_key=doc_ref['partition_key'])
+                # Query for one document ID at a time
+                items = []
+                async for item in container.query_items(query=query, max_item_count=1):
+                    if item['id'] not in processed_ids:
+                        items.append(item)
+                        processed_ids.add(item['id'])
+                        break
+                
+                if not items:
+                    print(f"\n✅ No more documents to update!")
+                    break
+                
+                doc_id = items[0]['id']
+                
+                # Read the full document (use id as partition key if not specified)
+                doc = await container.read_item(item=doc_id, partition_key=doc_id)
                 
                 # Add usage field with null values
                 doc['usage'] = {
@@ -81,11 +79,13 @@ async def main():
                 await container.upsert_item(doc)
                 updated_count += 1
                 
-                if i % 10 == 0:
-                    print(f"✅ Updated {i}/{len(doc_ids)} documents...")
+                if updated_count % 10 == 0:
+                    print(f"✅ Updated {updated_count} documents...")
                 
             except Exception as e:
-                print(f"❌ Error updating document {doc_ref['id']}: {e}")
+                print(f"❌ Error in batch {batch_num + 1}: {e}")
+                # Continue with next document
+                continue
         
         print(f"\n🎉 Update Complete!")
         print(f"✅ Successfully updated: {updated_count} documents")
