@@ -37,36 +37,37 @@ async def main():
     container = database.get_container_client(CONTAINER_NAME)
     
     try:
-        # Query for message documents without usage field using pagination
-        query = "SELECT * FROM c WHERE c.type = 'message' AND c.role = 'assistant' AND NOT IS_DEFINED(c.usage)"
+        # Query for document IDs only to avoid header size issues
+        # We'll fetch full documents one at a time using read_item
+        query = "SELECT c.id, c._partitionKey FROM c WHERE c.type = 'message' AND c.role = 'assistant' AND NOT IS_DEFINED(c.usage)"
         
-        print("🔍 Querying for documents using pagination...")
-        documents = []
-        page_size = 1  # Start with very small page size to avoid header size issues
+        print("🔍 Querying for document IDs...")
+        doc_ids = []
         
-        # Use pagination to fetch documents in small batches
-        print(f"📄 Fetching documents with page size: {page_size}")
+        # Fetch document IDs
+        print(f"📄 Fetching document IDs...")
         try:
-            async for item in container.query_items(query=query, max_item_count=page_size, enable_cross_partition_query=True):
-                documents.append(item)
-                if len(documents) % 10 == 0:
-                    print(f"📥 Fetched {len(documents)} documents so far...")
-                if len(documents) >= MAX_RECORDS:
+            async for item in container.query_items(query=query, max_item_count=100):
+                doc_ids.append({'id': item['id'], 'partition_key': item.get('_partitionKey', item['id'])})
+                if len(doc_ids) >= MAX_RECORDS:
                     break
         except Exception as e:
             print(f"⚠️  Error during query: {e}")
             raise
         
-        print(f"📋 Found {len(documents)} documents to update\n")
+        print(f"📋 Found {len(doc_ids)} documents to update\n")
         
-        if not documents:
+        if not doc_ids:
             print("✅ No documents need updating!")
             return
         
-        # Update documents
+        # Update documents one by one
         updated_count = 0
-        for i, doc in enumerate(documents, 1):
+        for i, doc_ref in enumerate(doc_ids, 1):
             try:
+                # Read the full document
+                doc = await container.read_item(item=doc_ref['id'], partition_key=doc_ref['partition_key'])
+                
                 # Add usage field with null values
                 doc['usage'] = {
                     'completion_tokens': None,
@@ -81,13 +82,14 @@ async def main():
                 updated_count += 1
                 
                 if i % 10 == 0:
-                    print(f"✅ Updated {i}/{len(documents)} documents...")
+                    print(f"✅ Updated {i}/{len(doc_ids)} documents...")
                 
             except Exception as e:
-                print(f"❌ Error updating document {doc.get('id')}: {e}")
+                print(f"❌ Error updating document {doc_ref['id']}: {e}")
         
         print(f"\n🎉 Update Complete!")
         print(f"✅ Successfully updated: {updated_count} documents")
+
         
     except Exception as e:
         print(f"❌ Error: {e}")
